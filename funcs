@@ -1,0 +1,152 @@
+#!/bin/bash --login
+# functions for upgrade openSSH
+basedir=`dirname $0`
+pwd=`pwd`
+color(){
+# usage: color blue hello
+    color=$1
+    text=$2
+    case $color in
+        red)
+            echo -e "\033[31m $text\033[0m"
+        ;;  
+        green)
+            echo -e "\033[32m $text\033[0m"
+        ;;  
+        yellow)
+            echo -e "\033[33m $text\033[0m"
+        ;;  
+        blue)
+            echo -e "\033[34m $text\033[0m"
+        ;;  
+        purple)
+            echo -e "\033[35m $text\033[0m"
+        ;;  
+        cyan)
+            echo -e "\033[36m $text\033[0m"
+        ;;  
+        white)
+            echo -e "\033[37m $text\033[0m"
+        ;;  
+        *)  
+            echo ' input error'
+        ;;  
+    esac
+}
+
+checkSSLVersion(){
+    sslNewVersion=1.0.2p-fips
+    sslLocalVersion=`( ssh -V ) 2> /tmp/ssh.tmp;cat /tmp/ssh.tmp |awk -FOpenSSL '{print $2}'|awk '{print $1}'`
+    if [[ $sslNewVersion == $sslLocalVersion ]];then
+        color green "openssl is the new version"
+        isUpgrade=no
+    else
+        echo $sslLocalVersion > /tmp/ssh.tmp 
+        echo $sslVersion >> /tmp/ssh.tmp
+        result=`cat /tmp/ssh.tmp|sort|tail -n1`
+        [[ $result == $sslNewVersion ]] || isUpgrade=no
+        isUpgrade=yes
+        rm /tmp/ssh.tmp -f
+    fi
+}
+
+checkSSHVersion(){
+    sshNewVersion=OpenSSH_7.8p1
+    sshLocalVersion=`( ssh -V ) 2> /tmp/ssh.tmp;cat /tmp/ssh.tmp|awk -F, '{print $1}'`
+    if [[ $sshNewVersion == $sshLocalVersion ]];then
+        color green "openssh is the new version"
+        isUpgrade=no
+    else
+        echo $sshLocalVersion > /tmp/ssh.tmp 
+        echo $sshVersion >> /tmp/ssh.tmp
+        result=`cat /tmp/ssh.tmp|sort|tail -n1`
+        [[ $result == $sshNewVersion ]] || isUpgrade=no
+        isUpgrade=yes
+        rm /tmp/ssh.tmp -f
+    fi
+}
+
+checkTelnet(){
+    result=`( which telnet ) 2>&1 > /tmp/ssh.tmp;cat /tmp/ssh.tmp|grep /usr/bin/which`
+    [[ -n $result ]] || isUpgrade=no
+    isUpgrade=yes
+    rm /tmp/ssh.tmp -f
+}
+
+checkServerPort(){
+    port=$1
+    server=$2
+    portCount=`( netstat -tpln ) 2>&1 >portCount.tmp;cat portCount.tmp|grep $port|wc -l`
+    rm portCount.tmp -f
+    if [[ $portCount -ge 1 ]];then
+        color cyan "$server is already started"
+    else
+        color red "$server isn't running"
+        exit 1
+    fi
+}
+
+upgradeTelnet(){
+    color blue "begin install telnet-server"
+    color blue "begin yum install telnet-server xinetd"
+    yum install -y telnet-server xinetd | grep 完毕
+    echo -e 'pts/0\npts/1\npts/2\npts/3'  >>/etc/securetty
+    systemctl enable xinetd.service
+    systemctl enable telnet.socket
+    systemctl start telnet.socket
+    systemctl start xinetd
+
+    checkServerPort 23 telnet-server
+}
+
+upgradeOpenSSL(){
+    # install fips
+    color blue "begin install fips"
+    color blue "begin yum install zlib-devel  pam-devel tcp_wrappers-devel gcc"
+    yum install -y zlib-devel  pam-devel tcp_wrappers-devel gcc|grep 完毕  
+    export FIPSDIR=/opt/fips-2.0.16
+    cd $pwd/package
+    tar -zxf openssl-fips-2.0.16.tar.gz
+    cd openssl-fips-2.0.16
+    ./config  || exit 1
+	make && make install || exit 1
+    rm -fr $pwd/package/openssl-fips-2.0.16
+    
+    # install openssl 1.0.2
+    color blue "begin install openssl"
+    cd $pwd/package
+    tar zxf openssl-1.0.2p.tar.gz
+    cd openssl-1.0.2p
+    ./config --prefix=/opt/openssl1.0.2p --openssldir=/opt/openssl1.0.2p/openssl fips --with-fipsdir=/opt/fips-2.0.16 zlib-dynamic shared -fPIC|| exit 1
+    make depend 
+    make 
+    make test 
+    make install|| exit 1
+
+    rm -fr $pwd/package/openssl1.0.2p
+    echo '/opt/openssl1.0.2p/lib' >> /etc/ld.so.conf
+    ldconfig
+}
+
+upgradeOpenSSH(){
+    # install openssh
+    color blue "begin install openssh"
+    cd $pwd/package
+	tar zxf openssh-7.8p1.tar.gz
+    cd openssh-7.8p1
+     ./configure --prefix=/opt/openssh7.8p1 --with-ssl-dir=/opt/openssl1.0.2p --with-pam --with-tcp-wrappers --host=x86_64|| exit 1
+    make && make install|| exit 1
+    \cp $pwd/etc/sshd_config /opt/openssh7.8p1/etc/
+    \cp /etc/sysconfig/sshd  /opt/openssh7.8p1/etc/
+    rm $pwd/package/openssh7.8p1 -fr
+    systemctl stop sshd
+    systemctl start sshd
+    sleep 1
+    checkServerPort 22 sshd
+}
+
+addToPath(){
+    touch /etc/profile.d/path.sh
+    grep -q "openssh7.8p1" /etc/profile.d/path.sh|| echo 'export PATH=/opt/openssh7.8p1/bin:/opt/openssh7.8p1/sbin:$PATH' >> /etc/profile.d/path.sh
+	source /etc/profile.d/path.sh
+}

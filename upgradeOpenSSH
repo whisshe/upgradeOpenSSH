@@ -1,0 +1,12 @@
+#!/bin/bash --login
+basedir=`dirname $0`
+source $basedir/funcs
+echo $PATH
+ssh -V
+checkTelnet
+[[ $isUpgrade == no ]] || upgradeTelnet
+checkSSLVersion
+[[ $isUpgrade == no ]] || upgradeOpenSSL
+checkSSHVersion
+[[ $isUpgrade == no ]] || upgradeOpenSSH
+addToPath

@@ -1,0 +1,14 @@
+#!/bin/bash --login
+# check server upgrade status
+
+basedir=`dirname $0`
+source $basedir/funcs
+ip=`ifconfig |awk 'NR==2{print $2}'`
+system=`cat /etc/redhat-release`
+color yellow "$system  $ip"
+checkSSLVersion
+#[[ $isUpgrade == yes ]] || color green "ssl is the new version"
+checkSSHVersion
+#[[ $isUpgrade == yes ]] || color green "ssh is the new version"
+checkTelnet
+#[[ $isUpgrade == yes ]] || color green "telnet is installed"
