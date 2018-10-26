@@ -4,3 +4,10 @@
 ```
 ./upgradeOpenSSH
 ```
+## 脚本运行完后
+```
+source /etc/profile.d/path.sh
+或者重新开一个新的ssh连接
+然后即可检查ssh是否升级成功
+ssh -V
+```
