@@ -232,28 +232,3 @@ upgrade(){
     fi
 }
 
-isRoot
-color white "================================================="
-color green "    1. openssh7.8p1 with openssl1.0.2p"
-color green "    2. openssh8.0p1 with openssl1.1.1g"
-color green "    3. openssh8.2p1 with openssl1.1.1g"
-color white "================================================="
-read -p "choose the order number to upgrade: " orderNumber
-
-case $orderNumber in 
-1)
-    expectSSLVersion=1.0.2p
-    expectSSHVersion=7.8p1
-    upgrade
-;;
-2)
-    expectSSLVersion=1.1.1g
-    expectSSHVersion=8.0p1
-    upgrade
-;;
-3)
-    expectSSLVersion=1.1.1g
-    expectSSHVersion=8.2p1
-    upgrade
-;;
-esac
