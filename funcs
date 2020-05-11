@@ -181,7 +181,7 @@ upgradeOpenSSH(){
         centosVersion
         if [[ $centos_v -eq 6 ]];then
             service sshd stop
-            mv /etc/init.d/sshd /etc/init.d/sshd.`date +%Y%m%d`
+            \mv /etc/init.d/sshd /etc/init.d/sshd.`date +%Y%m%d`
             \cp contrib/redhat/sshd.init /etc/init.d/sshd
             sed -i "s#SSHD=/usr/sbin/sshd#SSHD=/opt/openssh${expectSSHVersion}/sbin/sshd#g" /etc/init.d/sshd
             sed -i "s#/usr/bin/ssh-keygen#/opt/openssh${expectSSHVersion}/bin/ssh-keygen#g" /etc/init.d/sshd
@@ -211,6 +211,7 @@ upgradeOpenSSH(){
         fi
         sleep 5
         checkServerPort 22 sshd
+        # 手动关闭，防止出现意外情况
         # stopTelnet
     fi
 }
