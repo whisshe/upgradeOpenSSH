@@ -1,6 +1,6 @@
-#!/bin/bash --login
+#!/bin/bash
 # functions for upgrade openSSH
-basedir=`dirname $0`
+basedir=$(dirname $(readlink -f "$0"))
 pwd=`pwd`
 color(){
 # usage: color blue hello
@@ -34,50 +34,69 @@ color(){
     esac
 }
 
+centosVersion(){
+    centos_v=$(cat /etc/centos-release |awk -F'release ' '{print $2}'|awk -F. '{print $1}')
+}
+
+isRoot(){
+    [[ $(id -u) == "0" ]] || ( echo "Error: You must be root to run this script!!";exit 1 )
+}
+
 checkSSLVersion(){
-    sslNewVersion=1.0.2p-fips
-    sslLocalVersion=`( ssh -V ) 2> /tmp/ssh.tmp;cat /tmp/ssh.tmp |awk -FOpenSSL '{print $2}'|awk '{print $1}'`
+    sslNewVersion=$1
+    ( ssh -V ) 2> /tmp/ssh.tmp
+    sslLocalVersion=`cat /tmp/ssh.tmp |awk -FOpenSSL '{print $2}'|awk '{print $1}'`
     if [[ $sslNewVersion == $sslLocalVersion ]];then
         color green "openssl is the new version"
-        isUpgrade=no
+        openSSLUpgrade=false
     else
         echo $sslLocalVersion > /tmp/ssh.tmp 
         echo $sslVersion >> /tmp/ssh.tmp
-        result=`cat /tmp/ssh.tmp|sort|tail -n1`
-        [[ $result == $sslNewVersion ]] || isUpgrade=no
-        isUpgrade=yes
+        result=`cat /tmp/ssh.tmp|sort -V|head -n1`
+        if [[ $result == $sslNewVersion ]];then
+            openSSLUpgrade=false
+        else
+            openSSLUpgrade=true
+        fi
         rm /tmp/ssh.tmp -f
     fi
 }
 
 checkSSHVersion(){
-    sshNewVersion=OpenSSH_7.8p1
-    sshLocalVersion=`( ssh -V ) 2> /tmp/ssh.tmp;cat /tmp/ssh.tmp|awk -F, '{print $1}'`
+    sshNewVersion=$1
+    ( ssh -V ) 2> /tmp/ssh.tmp
+    sshLocalVersion=`cat /tmp/ssh.tmp|awk -F, '{print $1}'`
     if [[ $sshNewVersion == $sshLocalVersion ]];then
         color green "openssh is the new version"
-        isUpgrade=no
+        openSSHUpgrade=false
     else
         echo $sshLocalVersion > /tmp/ssh.tmp 
-        echo $sshVersion >> /tmp/ssh.tmp
-        result=`cat /tmp/ssh.tmp|sort|tail -n1`
-        [[ $result == $sshNewVersion ]] || isUpgrade=no
-        isUpgrade=yes
+        echo OpenSSH_$sshNewVersion >> /tmp/ssh.tmp
+        result=`cat /tmp/ssh.tmp|sort|head -n1`
+        if [[ $result == $sshNewVersion ]];then
+            openSSHUpgrade=false
+        else
+            openSSHUpgrade=true
+        fi
         rm /tmp/ssh.tmp -f
     fi
 }
 
 checkTelnet(){
-    result=`( which telnet ) 2>&1 > /tmp/ssh.tmp;cat /tmp/ssh.tmp|grep /usr/bin/which`
-    [[ -n $result ]] || isUpgrade=no
-    isUpgrade=yes
+    ( which telnet ) 2>&1 > /tmp/ssh.tmp
+    result=`cat /tmp/ssh.tmp|grep /usr/bin/which`
+    if [[ -n $result ]];then
+        telnetUpgrade=false
+    else
+        telnetUpgrade=true
+    fi
     rm /tmp/ssh.tmp -f
 }
 
 checkServerPort(){
     port=$1
     server=$2
-    portCount=`( netstat -tpln ) 2>&1 >portCount.tmp;cat portCount.tmp|grep $port|wc -l`
-    rm portCount.tmp -f
+    portCount=`netstat -tpln|grep ":${port}[[:space:]]"|grep -v grep|wc -l`
     if [[ $portCount -ge 1 ]];then
         color cyan "$server is already started"
     else
@@ -86,67 +105,155 @@ checkServerPort(){
     fi
 }
 
-upgradeTelnet(){
-    color blue "begin install telnet-server"
-    color blue "begin yum install telnet-server xinetd"
-    yum install -y telnet-server xinetd | grep 完毕
-    echo -e 'pts/0\npts/1\npts/2\npts/3'  >>/etc/securetty
-    systemctl enable xinetd.service
-    systemctl enable telnet.socket
-    systemctl start telnet.socket
-    systemctl start xinetd
-
+installTelnet(){
+    checkTelnet
+    if [[ $telnetUpgrade == true ]];then
+        centosVersion
+        color blue "begin install telnet-server"
+        color blue "begin yum install telnet-server xinetd"
+        yum install -y net-tools telnet-server xinetd | grep 完毕
+        echo -e 'pts/0\npts/1\npts/2\npts/3'  >>/etc/securetty
+    fi
+    if [[ $centos_v -eq 7 ]];then
+        systemctl enable xinetd.service
+        systemctl enable telnet.socket
+        systemctl start telnet.socket
+        systemctl start xinetd
+    elif [[ $centos_v -eq 6 ]];then
+        sed -i "s/disable.*=.*yes/disable         = no/" /etc/xinetd.d/telnet
+        service xinetd restart
+    fi
+    sleep 2
     checkServerPort 23 telnet-server
 }
 
-upgradeOpenSSL(){
-    # install fips
-    color blue "begin install fips"
-    color blue "begin yum install zlib-devel  pam-devel tcp_wrappers-devel gcc"
-    yum install -y zlib-devel  pam-devel tcp_wrappers-devel gcc|grep 完毕  
-    export FIPSDIR=/opt/fips-2.0.16
-    cd $pwd/package
-    tar -zxf openssl-fips-2.0.16.tar.gz
-    cd openssl-fips-2.0.16
-    ./config  || exit 1
-	make && make install || exit 1
-    rm -fr $pwd/package/openssl-fips-2.0.16
-    
-    # install openssl 1.0.2
-    color blue "begin install openssl"
-    cd $pwd/package
-    tar zxf openssl-1.0.2p.tar.gz
-    cd openssl-1.0.2p
-    ./config --prefix=/opt/openssl1.0.2p --openssldir=/opt/openssl1.0.2p/openssl fips --with-fipsdir=/opt/fips-2.0.16 zlib-dynamic shared -fPIC|| exit 1
-    make depend 
-    make 
-    make test 
-    make install|| exit 1
+stopTelnet(){
+    centosVersion
+    color blue "stop telnet-server"
+    if [[ $centos_v -eq 7 ]];then
+        systemctl disable xinetd.service
+        systemctl disable telnet.socket
+        systemctl stop telnet.socket
+        systemctl stop xinetd
+    elif [[ $centos_v -eq 6 ]];then
+        service xinetd stop
+    fi
+}
 
-    rm -fr $pwd/package/openssl1.0.2p
-    echo '/opt/openssl1.0.2p/lib' >> /etc/ld.so.conf
-    ldconfig
+upgradeOpenSSL(){
+    export expectSSLVersion=$1
+    checkSSLVersion ${expectSSLVersion}
+    if [[ $openSSLUpgrade == 'true' ]];then
+        color blue "begin yum install zlib-devel  pam-devel tcp_wrappers-devel gcc wget"
+        yum install -y zlib-devel  pam-devel tcp_wrappers-devel gcc perl wget|grep 完毕  
+        color blue "begin install openssl"
+        cd $pwd/package
+        [ -f openssl-${expectSSLVersion}.tar.gz ] || wget https://www.openssl.org/source/openssl-${expectSSLVersion}.tar.gz
+        tar zxf openssl-${expectSSLVersion}.tar.gz
+        cd openssl-${expectSSLVersion}
+        ./config --prefix=/opt/openssl${expectSSLVersion} --openssldir=/opt/openssl${expectSSLVersion}/openssl  zlib-dynamic shared -fPIC|| exit 1
+        make depend 
+        make 
+        make test 
+        make install|| ( color red "openssl make failed";exit 1 )
+    
+        rm -fr $pwd/package/openssl${expectSSLVersion}
+        grep -q /opt/openssl${expectSSLVersion}/lib /etc/ld.so.conf || echo "/opt/openssl${expectSSLVersion}/lib" >> /etc/ld.so.conf
+        ldconfig
+    fi
 }
 
 upgradeOpenSSH(){
-    # install openssh
-    color blue "begin install openssh"
-    cd $pwd/package
-	tar zxf openssh-7.8p1.tar.gz
-    cd openssh-7.8p1
-     ./configure --prefix=/opt/openssh7.8p1 --with-ssl-dir=/opt/openssl1.0.2p --with-pam --with-tcp-wrappers --host=x86_64|| exit 1
-    make && make install|| exit 1
-    \cp $pwd/etc/sshd_config /opt/openssh7.8p1/etc/
-    \cp /etc/sysconfig/sshd  /opt/openssh7.8p1/etc/
-    rm $pwd/package/openssh7.8p1 -fr
-    systemctl stop sshd
-    systemctl start sshd
-    sleep 1
-    checkServerPort 22 sshd
+    export expectSSHVersion=$1
+    checkSSHVersion $expectSSHVersion
+    if [[ $openSSHUpgrade == true ]];then
+        color blue "begin install openssh"
+        cd $pwd/package
+        [ -f openssh-${expectSSHVersion}.tar.gz ] || wget https://openbsd.hk/pub/OpenBSD/OpenSSH/portable/openssh-${expectSSHVersion}.tar.gz
+    	tar zxf openssh-${expectSSHVersion}.tar.gz
+        cd openssh-${expectSSHVersion}
+        ./configure --prefix=/opt/openssh${expectSSHVersion} --with-ssl-dir=/opt/openssl${expectSSLVersion} --with-pam  --sysconfdir=/opt/openssh${expectSSHVersion}/etc --with-zlib   --with-md5-passwords
+        make && make install|| ( color red "openssh make failed ";exit 1 )
+        # 修改配置文件
+        echo 'PermitRootLogin yes' >> /opt/openssh${expectSSHVersion}/etc/sshd_config
+        echo 'UsePAM no' >> /opt/openssh${expectSSHVersion}/etc/sshd_config
+        echo 'UseDNS no' >> /opt/openssh${expectSSHVersion}/etc/sshd_config
+        centosVersion
+        if [[ $centos_v -eq 6 ]];then
+            service sshd stop
+            mv /etc/init.d/sshd /etc/init.d/sshd.`date +%Y%m%d`
+            \cp contrib/redhat/sshd.init /etc/init.d/sshd
+            sed -i "s#SSHD=/usr/sbin/sshd#SSHD=/opt/openssh${expectSSHVersion}/sbin/sshd#g" /etc/init.d/sshd
+            sed -i "s#/usr/bin/ssh-keygen#/opt/openssh${expectSSHVersion}/bin/ssh-keygen#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_rsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_rsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_dsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_dsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_ecdsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_ecdsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#SELINUX=enforcing#SELINUX=disabled#g" /etc/selinux/config
+            chmod +x /etc/init.d/sshd
+            chkconfig sshd on
+            /etc/init.d/sshd start
+        elif [[ $centos_v -eq 7 ]];then
+            \cp contrib/redhat/sshd.init /etc/init.d/sshd
+            sed -i "s#SSHD=/usr/sbin/sshd#SSHD=/opt/openssh${expectSSHVersion}/sbin/sshd#g" /etc/init.d/sshd
+            sed -i "s#/usr/bin/ssh-keygen#/opt/openssh${expectSSHVersion}/bin/ssh-keygen#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_rsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_rsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_dsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_dsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#/etc/ssh/ssh_host_ecdsa_key.pub#/opt/openssh${expectSSHVersion}/etc/ssh_host_ecdsa_key.pub#g" /etc/init.d/sshd
+            sed -i "s#SELINUX=enforcing#SELINUX=disabled#g" /etc/selinux/config
+            chmod +x /etc/init.d/sshd
+            systemctl stop sshd
+            # 备份原service
+            mkdir -p /data/ssh_bak/`date +%Y%m%d`
+            mv /usr/lib/systemd/system/sshd.service /data/ssh_bak/`date +%Y%m%d`
+            chkconfig sshd on
+            systemctl daemon-reload
+            systemctl start sshd
+        fi
+        sleep 5
+        checkServerPort 22 sshd
+        # stopTelnet
+    fi
 }
 
 addToPath(){
-    touch /etc/profile.d/path.sh
-    grep -q "openssh7.8p1" /etc/profile.d/path.sh|| echo 'export PATH=/opt/openssh7.8p1/bin:/opt/openssh7.8p1/sbin:$PATH' >> /etc/profile.d/path.sh
-	source /etc/profile.d/path.sh
+    touch /etc/profile.d/openssh.sh
+    grep -q "openssh${expectSSHVersion}" /etc/profile.d/openssh.sh|| echo "export PATH=/opt/openssh${expectSSHVersion}/bin:/opt/openssh${expectSSHVersion}/sbin:$PATH" >> /etc/profile.d/openssh.sh
+	source /etc/profile.d/openssh.sh
 }
+
+upgrade(){
+    checkSSLVersion ${expectSSLVersion}
+    checkSSHVersion ${expectSSHVersion}
+    if [[ $openSSHUpgrade == true ]] || [[ $openSSLUpgrade == true ]];then
+        installTelnet
+        upgradeOpenSSL $expectSSLVersion
+        upgradeOpenSSH $expectSSHVersion
+        addToPath
+    fi
+}
+
+isRoot
+color white "================================================="
+color green "    1. openssh7.8p1 with openssl1.0.2p"
+color green "    2. openssh8.0p1 with openssl1.1.1g"
+color green "    3. openssh8.2p1 with openssl1.1.1g"
+color white "================================================="
+read -p "choose the order number to upgrade: " orderNumber
+
+case $orderNumber in 
+1)
+    expectSSLVersion=1.0.2p
+    expectSSHVersion=7.8p1
+    upgrade
+;;
+2)
+    expectSSLVersion=1.1.1g
+    expectSSHVersion=8.0p1
+    upgrade
+;;
+3)
+    expectSSLVersion=1.1.1g
+    expectSSHVersion=8.2p1
+    upgrade
+;;
+esac
