@@ -1,7 +1,7 @@
 #!/bin/bash
 # functions for upgrade openSSH
 basedir=$(dirname $(readlink -f "$0"))
-pwd=`pwd`
+pwd=${basedir}
 color(){
 # usage: color blue hello
     color=$1
@@ -204,7 +204,7 @@ upgradeOpenSSH(){
             systemctl stop sshd
             # 备份原service
             mkdir -p /data/ssh_bak/`date +%Y%m%d`
-            mv /usr/lib/systemd/system/sshd.service /data/ssh_bak/`date +%Y%m%d`
+            \mv /usr/lib/systemd/system/sshd.service /data/ssh_bak/`date +%Y%m%d`
             chkconfig sshd on
             systemctl daemon-reload
             systemctl start sshd
@@ -233,3 +233,41 @@ upgrade(){
     fi
 }
 
+chooseVersion(){
+    basedir=$(dirname $(readlink -f "$0"))
+    source $basedir/funcs
+    echo $PATH
+    ssh -V
+    isRoot
+    color white "================================================="
+    color green "    1. openssh7.8p1 with openssl1.0.2p"
+    color green "    2. openssh8.0p1 with openssl1.1.1g"
+    color green "    3. openssh8.2p1 with openssl1.1.1g"
+    color white "    q/quit to quit this menu"
+    color white "================================================="
+    read -p "choose the order number to upgrade: " orderNumber
+    
+    case $orderNumber in 
+    1)
+        expectSSLVersion=1.0.2p
+        expectSSHVersion=7.8p1
+        upgrade
+    ;;
+    2)
+        expectSSLVersion=1.1.1g
+        expectSSHVersion=8.0p1
+        upgrade
+    ;;
+    3)
+        expectSSLVersion=1.1.1g
+        expectSSHVersion=8.2p1
+        upgrade
+    ;;
+    q|quit)
+        exit 0
+    ;;
+    *)
+        color red "invalid option"
+    ;;
+    esac
+}
